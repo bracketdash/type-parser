@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import cem from '../../demo/custom-elements.json' with { type: 'json' };
+import cemPartial from '../../demo/custom-elements.partial.json' with { type: 'json' };
+import cemFull from '../../demo/custom-elements.full.json' with { type: 'json' };
 import { getComponentByClassName, getComponentPublicProperties } from "@wc-toolkit/cem-utilities";
 import { Property } from "@wc-toolkit/cem-utilities";
 
@@ -102,16 +104,47 @@ describe('type-parser', () => {
     // Assert
     expect(enumExample?.parsedType?.text).toEqual("0 | 1 | 2 | 3");
   });
+});
 
-  test('should resolve types for interface type', () => {
-    // Arrange
-    const complexObject = properties.find(p => p.name === 'complexObject');
-    
-    // Act
-    
-    // Assert
-    expect(complexObject?.parsedType?.text).toEqual(
-      "{ arrowElement?: string | HTMLElement, anchorElement?: string | HTMLAnchorElement, arrowPadding?: number, maxWidth?: number, offset?: number, position?: 'top' | 'right' | 'bottom' | 'left' | 'top-start' | 'top-end' | 'right-start' | 'right-end' | 'bottom-start' | 'bottom-end' | 'left-start' | 'left-end', viewportMargin?: number, rootMarginTop?: number }"
-    );
+function getPartialProperties() {
+  // Use the CEM v1 structure for partial/full files
+  const module = cemPartial.modules.find((m: any) => m.path.endsWith('my-component.ts'));
+  if (!module) return [];
+  const decl = module.declarations.find((d: any) => d.name === 'MyComponent');
+  return decl ? decl.members : [];
+}
+
+function getFullProperties() {
+  const module = cemFull.modules.find((m: any) => m.path.endsWith('my-component.ts'));
+  if (!module) return [];
+  const decl = module.declarations.find((d: any) => d.name === 'MyComponent');
+  return decl ? decl.members : [];
+}
+
+describe('type-parser (parseObjectTypes: "partial")', () => {
+  const properties = getPartialProperties();
+  test('should reference custom types by name and expand objects', () => {
+    const internal = properties.find((p: any) => p.name === 'internal');
+    expect(internal?.parsedType?.text).toEqual("'sports' | 'music' | 'art'");
+    const tsExternal = properties.find((p: any) => p.name === 'tsExternal');
+    expect(tsExternal?.parsedType?.text).toEqual("'value4' | 'value5' | 'value6'");
+    const dtsExternal = properties.find((p: any) => p.name === 'dtsExternal');
+    expect(dtsExternal?.parsedType?.text).toEqual("'value1' | 'value2' | 'value3'");
+    const objectProp = properties.find((p: any) => p.name === 'complexObject');
+    expect(objectProp?.parsedType?.text).toContain('arrowElement'); // Should expand PositionPopoverOptions
+  });
+});
+
+describe('type-parser (parseObjectTypes: "full")', () => {
+  const properties = getFullProperties();
+  test('should fully expand all types', () => {
+    const internal = properties.find((p: any) => p.name === 'internal');
+    expect(internal?.parsedType?.text).toEqual("'sports' | 'music' | 'art'");
+    const tsExternal = properties.find((p: any) => p.name === 'tsExternal');
+    expect(tsExternal?.parsedType?.text).toEqual("'value4' | 'value5' | 'value6'");
+    const dtsExternal = properties.find((p: any) => p.name === 'dtsExternal');
+    expect(dtsExternal?.parsedType?.text).toEqual("'value1' | 'value2' | 'value3'");
+    const objectProp = properties.find((p: any) => p.name === 'complexObject');
+    expect(objectProp?.parsedType?.text).toContain('arrowElement'); // Should expand PositionPopoverOptions
   });
 });

@@ -7,6 +7,8 @@ import type ts from "typescript";
 
 /** Options for configuring the CEM Type Parser plugin */
 export interface Options {
+  /** Controls whether object types are parsed, and if so, whether fully or partially ('none', 'partial', 'full') */
+  parseObjectTypes?: string;
   /** Determines the name of the property used in the manifest to store the parsed type */
   propertyName?: string;
   /** Shows output logs used for debugging */
@@ -46,6 +48,7 @@ let typeScript: typeof import("typescript");
 let tsConfigFile: any;
 let log: Logger;
 const defaultOptions: Options = {
+  parseObjectTypes: "none",
   propertyName: "parsedType",
 };
 
@@ -268,8 +271,24 @@ function getFinalType(type: any): string {
           prop,
           prop.valueDeclaration!
         );
+        let typeStr: string;
+        // For 'partial', use the type name for custom types, otherwise expand
+        if (options.parseObjectTypes === "partial") {
+          const symbol = propType.getSymbol && propType.getSymbol();
+          if (symbol && symbol.getName) {
+            const typeName = symbol.getName();
+            if (!primitives.includes(typeName) && !isNpmType(propType)) {
+              typeStr = typeName;
+            } else {
+              typeStr = getFinalType(propType);
+            }
+          } else {
+            typeStr = getFinalType(propType);
+          }
+        } else {
+          typeStr = getFinalType(propType);
+        }
         // Check if the property type is a union with undefined
-        let typeStr = getFinalType(propType);
         let isOptional = false;
         if (propType.isUnion && propType.isUnion()) {
           const types = propType.types;
@@ -277,7 +296,18 @@ function getFinalType(type: any): string {
           if (hasUndefined) {
             isOptional = true;
             const nonUndefinedTypes = types.filter((t: any) => !(t.flags & typeScript.TypeFlags.Undefined));
-            typeStr = nonUndefinedTypes.map(getFinalType).join(" | ");
+            typeStr = nonUndefinedTypes.map((t: any) => {
+              if (options.parseObjectTypes === "partial") {
+                const s = t.getSymbol && t.getSymbol();
+                if (s && s.getName) {
+                  const n = s.getName();
+                  if (!primitives.includes(n) && !isNpmType(t)) {
+                    return n;
+                  }
+                }
+              }
+              return getFinalType(t);
+            }).join(" | ");
           }
         }
         // If the type is exactly undefined | T, treat as optional
@@ -312,7 +342,7 @@ function visitNode(node: any) {
   if (
     typeScript.isTypeAliasDeclaration(node) ||
     typeScript.isEnumDeclaration(node) ||
-    typeScript.isInterfaceDeclaration(node)
+    (typeScript.isInterfaceDeclaration(node) && options.parseObjectTypes !== "none")
   ) {
     const symbol = typeChecker.getSymbolAtLocation(node.name);
     if (symbol) {
