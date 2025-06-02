@@ -4,7 +4,7 @@ export default {
   /** Globs to analyze */
   globs: ["demo/src/**/*.ts"],
   /** Directory to output CEM to */
-  outdir: "demo", // ensure output goes to demo/custom-elements.json by default
+  outdir: "demo",
   /** Run in dev mode, provides extra logging */
   dev: false,
   /** Output CEM path to `package.json`, defaults to true */
@@ -23,7 +23,7 @@ export default {
       outdir: "demo",
       dev: false,
       packagejson: false,
-      plugins: [typeParserPlugin({ debug: false, parseObjectTypes: value })],
+      plugins: [typeParserPlugin({ debug: false, parseObjectTypes: 'partial' })],
       overrideModuleCreation({ ts, globs }) {
         const program = getTsProgram(ts, globs, "tsconfig.json");
         return program

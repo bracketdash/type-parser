@@ -134,16 +134,8 @@ function getParsedType(fileName: string, typeName: string): string {
     return typeName;
   }
 
-  if (typeof groupedTypes[typeName][fileName] !== "undefined") {
-    return groupedTypes[typeName][fileName];
-  }
-
-  if (Object.entries(groupedTypes[typeName]).length === 1) {
-    return Object.values(groupedTypes[typeName])[0];
-  }
-
-  // if typeName is an interface or type alias, try to resolve its structure
-  if (typeChecker && typeScript) {
+  // In partial/full mode, always expand custom interfaces using getFinalType
+  if (options.parseObjectTypes !== "none" && typeChecker && typeScript) {
     const sourceFile = typeChecker.getProgram().getSourceFile(fileName);
     if (sourceFile) {
       const symbols = typeChecker.getSymbolsInScope(
@@ -153,11 +145,20 @@ function getParsedType(fileName: string, typeName: string): string {
       const symbol = symbols.find((s: any) => s.name === typeName);
       if (symbol) {
         const type = typeChecker.getDeclaredTypeOfSymbol(symbol);
-        return getFinalType(type);
+        return getFinalType(type, true);
       }
     }
   }
 
+  if (typeof groupedTypes[typeName][fileName] !== "undefined") {
+    return groupedTypes[typeName][fileName];
+  }
+
+  if (Object.entries(groupedTypes[typeName]).length === 1) {
+    return Object.values(groupedTypes[typeName])[0];
+  }
+
+  // fallback
   return typeName;
 }
 
@@ -189,24 +190,29 @@ function getObjectTypes(fileName: string, typeName: string): string {
   return typeName;
 }
 
-function getFinalType(type: any): string {
-  if(isNpmType(type)) {
-    return typeChecker.typeToString(type);
+function getFinalType(type: any, isRoot = true, seenTypes = new Set()): string {
+  // Recursion/circular reference guard
+  const symbol = type.getSymbol && type.getSymbol();
+  if (symbol && seenTypes.has(symbol)) {
+    // Reference by name if already seen
+    return symbol.getName ? symbol.getName() : typeChecker.typeToString(type);
   }
-  if (type.isUnion()) {
-    // If the union includes undefined, treat as optional
+  if (symbol) {
+    seenTypes.add(symbol);
+  }
+
+  if (type.isUnion && type.isUnion()) {
     const types = type.types;
     const hasUndefined = types.some((t: any) => t.flags & typeScript.TypeFlags.Undefined);
     const nonUndefinedTypes = types.filter((t: any) => !(t.flags & typeScript.TypeFlags.Undefined));
-    const unionStr = nonUndefinedTypes.map(getFinalType).join(" | ");
+    const unionStr = nonUndefinedTypes.map((t: any) => getFinalType(t, false, new Set(seenTypes))).join(" | ");
     if (hasUndefined && nonUndefinedTypes.length === 1) {
-      // handled in property formatting below
       return unionStr + ' (optional)';
     }
-    return types.map(getFinalType).join(" | ");
+    return types.map((t: any) => getFinalType(t, false, new Set(seenTypes))).join(" | ");
   }
-  if (type.isIntersection()) {
-    return type.types.map(getFinalType).join(" & ");
+  if (type.isIntersection && type.isIntersection()) {
+    return type.types.map((t: any) => getFinalType(t, false, new Set(seenTypes))).join(" & ");
   }
   if (type.flags & typeScript.TypeFlags.String) {
     return "string";
@@ -241,12 +247,10 @@ function getFinalType(type: any): string {
   if (type.flags & typeScript.TypeFlags.ESSymbol) {
     return "symbol";
   }
-
   if (type.flags & typeScript.TypeFlags.StringLiteral) {
     const value = (type as ts.LiteralType).value as string;
     return `"${value}"`;
   }
-
   if (
     type.flags & typeScript.TypeFlags.NumberLiteral ||
     type.flags & typeScript.TypeFlags.BigIntLiteral
@@ -254,16 +258,23 @@ function getFinalType(type: any): string {
     const value = (type as ts.LiteralType).value as number;
     return `${value}`;
   }
-
   if (type.flags & typeScript.TypeFlags.Enum) {
     const enumType = type as ts.EnumType;
     const enumMembers = typeChecker.getPropertiesOfType(enumType);
     const enumValues = enumMembers.map((member: { name: any }) => member.name);
     return enumValues.join(" | ");
   }
-
   // Get properties if the type is an object
-  if (type.isClassOrInterface() || type.flags & typeScript.TypeFlags.Object) {
+  if (type.isClassOrInterface && type.isClassOrInterface() || type.flags & typeScript.TypeFlags.Object) {
+    // In partial mode, only expand at the root level
+    if (options.parseObjectTypes === "partial" && !isRoot) {
+      if (symbol && symbol.getName) {
+        const typeName = symbol.getName();
+        if (!primitives.includes(typeName) && !isNpmType(type)) {
+          return typeName;
+        }
+      }
+    }
     const properties = typeChecker.getPropertiesOfType(type);
     const props = properties.map(
       (prop: { valueDeclaration: any; name: any }) => {
@@ -271,24 +282,27 @@ function getFinalType(type: any): string {
           prop,
           prop.valueDeclaration!
         );
-        let typeStr: string;
-        // For 'partial', use the type name for custom types, otherwise expand
+        // In partial mode, if this property is a custom type, reference by name
         if (options.parseObjectTypes === "partial") {
-          const symbol = propType.getSymbol && propType.getSymbol();
-          if (symbol && symbol.getName) {
-            const typeName = symbol.getName();
+          const propSymbol = propType.getSymbol && propType.getSymbol();
+          if (propSymbol && propSymbol.getName) {
+            const typeName = propSymbol.getName();
             if (!primitives.includes(typeName) && !isNpmType(propType)) {
-              typeStr = typeName;
-            } else {
-              typeStr = getFinalType(propType);
+              // If the property is optional, add ?
+              let isOptional = false;
+              if (propType.isUnion && propType.isUnion()) {
+                const types = propType.types;
+                const hasUndefined = types.some((t: any) => t.flags & typeScript.TypeFlags.Undefined);
+                if (hasUndefined) {
+                  isOptional = true;
+                }
+              }
+              return `${prop.name}${isOptional ? '?' : ''}: ${typeName}`;
             }
-          } else {
-            typeStr = getFinalType(propType);
           }
-        } else {
-          typeStr = getFinalType(propType);
         }
-        // Check if the property type is a union with undefined
+        // Otherwise, expand as normal
+        let typeStr = getFinalType(propType, false, new Set(seenTypes));
         let isOptional = false;
         if (propType.isUnion && propType.isUnion()) {
           const types = propType.types;
@@ -296,21 +310,9 @@ function getFinalType(type: any): string {
           if (hasUndefined) {
             isOptional = true;
             const nonUndefinedTypes = types.filter((t: any) => !(t.flags & typeScript.TypeFlags.Undefined));
-            typeStr = nonUndefinedTypes.map((t: any) => {
-              if (options.parseObjectTypes === "partial") {
-                const s = t.getSymbol && t.getSymbol();
-                if (s && s.getName) {
-                  const n = s.getName();
-                  if (!primitives.includes(n) && !isNpmType(t)) {
-                    return n;
-                  }
-                }
-              }
-              return getFinalType(t);
-            }).join(" | ");
+            typeStr = nonUndefinedTypes.map((t: any) => getFinalType(t, false, new Set(seenTypes))).join(" | ");
           }
         }
-        // If the type is exactly undefined | T, treat as optional
         if (!isOptional && typeStr.endsWith(' (optional)')) {
           isOptional = true;
           typeStr = typeStr.replace(' (optional)', '');
@@ -320,7 +322,6 @@ function getFinalType(type: any): string {
     );
     return `{ ${props.join(", ")} }`;
   }
-
   return typeChecker.typeToString(type);
 }
 
@@ -447,7 +448,17 @@ function updateParsedTypes(component: Component, context: any) {
 
   typedMembers.forEach((member) => {
     const typeValue = getTypeValue(member, context);
-    if (typeValue !== member.type.text) {
+    // Always set parsedType for any type that is not a primitive in partial/full mode
+    if (
+      options.parseObjectTypes !== "none" &&
+      member.type &&
+      typeof typeValue === "string" &&
+      !primitives.includes(member.type.text)
+    ) {
+      member[propName] = {
+        text: typeValue.replace(/"/g, "'"),
+      };
+    } else if (typeValue !== member.type.text) {
       member[propName] = {
         text: typeValue.replace(/"/g, "'"),
       };
